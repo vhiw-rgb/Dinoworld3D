@@ -1,0 +1,636 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0">
+    <title>3D 立體恐龍世界</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: 'Noto Sans TC', sans-serif;
+            background-color: #000;
+            touch-action: none;
+        }
+        #canvas-container {
+            width: 100vw;
+            height: 100vh;
+            display: block;
+        }
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+        #title-box {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: rgba(255, 255, 255, 0.9);
+            text-shadow: 2px 2px 4px #000;
+        }
+        h1 { margin: 0; font-size: 1.4rem; color: #ffda79; }
+        p { margin: 5px 0 0 0; font-size: 0.9rem; color: #ccc; }
+
+        /* 右下角控制區 */
+        #controls-container {
+            position: absolute;
+            bottom: 40px;
+            right: 30px;
+            width: 160px;
+            height: 160px;
+            pointer-events: auto;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            user-select: none;
+        }
+        .control-row {
+            display: flex;
+            justify-content: center;
+            width: 100%;
+        }
+        .d-pad-btn {
+            width: 50px;
+            height: 50px;
+            background: rgba(255, 255, 255, 0.15);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            border-radius: 12px;
+            margin: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 20px;
+            backdrop-filter: blur(4px);
+            touch-action: none;
+            transition: background 0.1s, transform 0.1s;
+        }
+        .d-pad-btn:active, .d-pad-btn.active {
+            background: rgba(255, 218, 121, 0.6);
+            transform: scale(0.92);
+        }
+        .spacer { width: 50px; height: 50px; margin: 4px; }
+        
+        #hint {
+            position: absolute;
+            bottom: 40px;
+            left: 30px;
+            color: rgba(255,255,255,0.6);
+            font-size: 13px;
+            max-width: 180px;
+            pointer-events: none;
+            line-height: 1.5;
+            text-shadow: 1px 1px 2px black;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="canvas-container"></div>
+    
+    <div id="ui-layer">
+        <div id="title-box">
+            <h1>3D 侏羅紀世界</h1>
+            <p>立體恐龍版</p>
+        </div>
+
+        <div id="hint">
+            👋 左側滑動：旋轉視角<br>
+            🕹️ 右側按鍵：移動角色
+        </div>
+
+        <div id="controls-container">
+            <div class="control-row">
+                <div class="d-pad-btn" id="btn-up">▲</div>
+            </div>
+            <div class="control-row">
+                <div class="d-pad-btn" id="btn-left">◀</div>
+                <div class="spacer"></div>
+                <div class="d-pad-btn" id="btn-right">▶</div>
+            </div>
+            <div class="control-row">
+                <div class="d-pad-btn" id="btn-down">▼</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 引入 Three.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    
+    <script>
+        // --- 變數與設置 ---
+        let camera, scene, renderer;
+        let moveState = { forward: false, backward: false, left: false, right: false };
+        let prevTime = performance.now();
+        const velocity = new THREE.Vector3();
+        const direction = new THREE.Vector3();
+        
+        const dinos = []; // 存儲恐龍物件與動畫狀態
+        let touchStartPos = { x: 0, y: 0 };
+        let cameraRotation = { x: 0, y: 0 }; 
+
+        init();
+        animate();
+
+        function init() {
+            const container = document.getElementById('canvas-container');
+
+            // 1. 場景
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87CEEB); 
+            scene.fog = new THREE.FogExp2(0x8fb3a1, 0.012); // 霧氣稍微變淡一點
+
+            // 2. 攝影機
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 2, 0);
+            cameraRotation.y = camera.rotation.y;
+            cameraRotation.x = camera.rotation.x;
+
+            // 3. 燈光 (提升質感)
+            const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.6);
+            hemiLight.position.set(0, 200, 0);
+            scene.add(hemiLight);
+
+            const dirLight = new THREE.DirectionalLight(0xffdfba, 1.2);
+            dirLight.position.set(100, 200, 50);
+            dirLight.castShadow = true;
+            dirLight.shadow.mapSize.width = 2048;
+            dirLight.shadow.mapSize.height = 2048;
+            const d = 100;
+            dirLight.shadow.camera.left = -d;
+            dirLight.shadow.camera.right = d;
+            dirLight.shadow.camera.top = d;
+            dirLight.shadow.camera.bottom = -d;
+            scene.add(dirLight);
+
+            // 4. 地面
+            const groundCanvas = document.createElement('canvas');
+            groundCanvas.width = 512;
+            groundCanvas.height = 512;
+            const ctx = groundCanvas.getContext('2d');
+            ctx.fillStyle = '#2d4c1e';
+            ctx.fillRect(0,0,512,512);
+            // 地面細節
+            for(let i=0; i<4000; i++){
+                ctx.fillStyle = Math.random() > 0.5 ? '#3a5f27' : '#1e3314';
+                const x = Math.random()*512;
+                const y = Math.random()*512;
+                const s = Math.random()*3;
+                ctx.fillRect(x,y,s,s);
+            }
+            const groundTexture = new THREE.CanvasTexture(groundCanvas);
+            groundTexture.wrapS = THREE.RepeatWrapping;
+            groundTexture.wrapT = THREE.RepeatWrapping;
+            groundTexture.repeat.set(60, 60);
+
+            const groundGeo = new THREE.PlaneGeometry(3000, 3000);
+            const groundMat = new THREE.MeshStandardMaterial({ 
+                map: groundTexture, roughness: 0.9, metalness: 0.1 
+            });
+            const ground = new THREE.Mesh(groundGeo, groundMat);
+            ground.rotation.x = -Math.PI / 2;
+            ground.receiveShadow = true;
+            scene.add(ground);
+
+            // 5. 植被
+            generateVegetation(300); 
+
+            // 6. 生成 3D 恐龍 (T-Rex, 雷龍, 三角龍)
+            spawnDinoGroup('trex', 5);
+            spawnDinoGroup('brachio', 8);
+            spawnDinoGroup('tri', 6);
+
+            // 7. 渲染器
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            container.appendChild(renderer.domElement);
+
+            setupMobileControls();
+            window.addEventListener('resize', onWindowResize);
+        }
+
+        // --- 3D 恐龍建造工廠 ---
+        // 這些函數使用幾何體組合出恐龍
+        
+        function createMaterial(color) {
+            return new THREE.MeshLambertMaterial({ color: color });
+        }
+
+        function createBox(w, h, d, color, x, y, z) {
+            const geo = new THREE.BoxGeometry(w, h, d);
+            const mat = createMaterial(color);
+            const mesh = new THREE.Mesh(geo, mat);
+            mesh.position.set(x, y, z);
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+            return mesh;
+        }
+
+        // 建立 T-REX
+        function buildTRex() {
+            const group = new THREE.Group();
+            const color = 0xd35400; // 橘色
+            const mat = createMaterial(color);
+
+            // 身體
+            const body = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.5, 3), mat);
+            body.position.y = 2.5;
+            body.castShadow = true;
+            group.add(body);
+
+            // 尾巴 (分段以模擬擺動)
+            const tailGroup = new THREE.Group();
+            tailGroup.position.set(0, 2.5, -1.5);
+            const tail1 = new THREE.Mesh(new THREE.BoxGeometry(1.2, 1.2, 1.5), mat);
+            tail1.position.z = -0.75; // 向後延伸
+            tailGroup.add(tail1);
+            const tail2 = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.8, 1.5), mat);
+            tail2.position.z = -2.25;
+            tailGroup.add(tail2);
+            group.add(tailGroup);
+
+            // 頭部組合 (脖子 + 頭)
+            const neckGroup = new THREE.Group();
+            neckGroup.position.set(0, 2.8, 1.5);
+            const neck = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1.0, 0.8), mat);
+            neck.position.y = 0.5;
+            neckGroup.add(neck);
+            
+            const head = new THREE.Mesh(new THREE.BoxGeometry(1.2, 1.0, 1.8), mat);
+            head.position.set(0, 1.0, 0.5); // 在脖子上面往前
+            head.castShadow = true;
+            neckGroup.add(head);
+            group.add(neckGroup);
+
+            // 小手
+            const armL = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.6, 0.2), mat);
+            armL.position.set(0.6, 2.5, 1.2);
+            armL.rotation.x = -Math.PI/3;
+            group.add(armL);
+            const armR = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.6, 0.2), mat);
+            armR.position.set(-0.6, 2.5, 1.2);
+            armR.rotation.x = -Math.PI/3;
+            group.add(armR);
+
+            // 腿部 (重點：Pivoting)
+            // 為了讓腿繞著大腿根部轉動，我們需要一個 Group
+            const legLGroup = new THREE.Group();
+            legLGroup.position.set(0.6, 2.0, 0);
+            const legLGeo = new THREE.Mesh(new THREE.BoxGeometry(0.5, 2.0, 0.6), mat);
+            legLGeo.position.y = -1.0; // 幾何中心下移，使 Group 原點在頂部
+            legLGeo.castShadow = true;
+            legLGroup.add(legLGeo);
+            group.add(legLGroup);
+
+            const legRGroup = new THREE.Group();
+            legRGroup.position.set(-0.6, 2.0, 0);
+            const legRGeo = new THREE.Mesh(new THREE.BoxGeometry(0.5, 2.0, 0.6), mat);
+            legRGeo.position.y = -1.0;
+            legRGeo.castShadow = true;
+            legRGroup.add(legRGeo);
+            group.add(legRGroup);
+
+            // 回傳包含各部位引用的物件，方便動畫控制
+            return {
+                mesh: group,
+                parts: { legL: legLGroup, legR: legRGroup, tail: tailGroup, neck: neckGroup },
+                type: 'trex'
+            };
+        }
+
+        // 建立 雷龍 (Brachiosaurus)
+        function buildBrachiosaurus() {
+            const group = new THREE.Group();
+            const color = 0x27ae60; // 綠色
+            const mat = createMaterial(color);
+
+            // 身體 (龐大)
+            const body = new THREE.Mesh(new THREE.BoxGeometry(2.5, 2.5, 4), mat);
+            body.position.y = 3;
+            body.castShadow = true;
+            group.add(body);
+
+            // 脖子 (長)
+            const neckGroup = new THREE.Group();
+            neckGroup.position.set(0, 4, 1.5);
+            const neck = new THREE.Mesh(new THREE.BoxGeometry(0.8, 5, 0.8), mat);
+            neck.position.set(0, 2.5, 0.5); // 向上向前
+            neck.rotation.x = -0.2;
+            neckGroup.add(neck);
+            
+            const head = new THREE.Mesh(new THREE.BoxGeometry(1, 0.8, 1.2), mat);
+            head.position.set(0, 5.2, 1.2);
+            neckGroup.add(head);
+            group.add(neckGroup);
+
+            // 尾巴
+            const tailGroup = new THREE.Group();
+            tailGroup.position.set(0, 3, -2);
+            const tail = new THREE.Mesh(new THREE.ConeGeometry(0.8, 5, 8), mat);
+            tail.rotation.x = -Math.PI / 2.5; // 向後倒
+            tail.position.z = -2.5;
+            tail.position.y = -0.5;
+            tailGroup.add(tail);
+            group.add(tailGroup);
+
+            // 四肢
+            function createLeg(x, z) {
+                const legG = new THREE.Group();
+                legG.position.set(x, 2, z);
+                const legM = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 3, 8), mat);
+                legM.position.y = -1.5;
+                legM.castShadow = true;
+                legG.add(legM);
+                return legG;
+            }
+
+            const legFL = createLeg(1, 1.5);
+            const legFR = createLeg(-1, 1.5);
+            const legBL = createLeg(1, -1.5);
+            const legBR = createLeg(-1, -1.5);
+
+            group.add(legFL); group.add(legFR); group.add(legBL); group.add(legBR);
+
+            return {
+                mesh: group,
+                parts: { legFL, legFR, legBL, legBR, neck: neckGroup, tail: tailGroup },
+                type: 'brachio'
+            };
+        }
+
+        // 建立 三角龍 (Triceratops)
+        function buildTriceratops() {
+            const group = new THREE.Group();
+            const color = 0x8e44ad; // 紫色
+            const mat = createMaterial(color);
+            const hornMat = createMaterial(0xf1c40f); // 黃角
+
+            // 身體
+            const body = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 3.5), mat);
+            body.position.y = 1.8;
+            body.castShadow = true;
+            group.add(body);
+
+            // 頭部
+            const headGroup = new THREE.Group();
+            headGroup.position.set(0, 2, 1.8);
+            
+            const headBox = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.5, 2), mat);
+            headGroup.add(headBox);
+
+            // 頭盾
+            const frill = new THREE.Mesh(new THREE.BoxGeometry(2.5, 2.5, 0.2), mat);
+            frill.position.set(0, 0.5, -0.8);
+            frill.rotation.x = -0.5;
+            headGroup.add(frill);
+
+            // 角
+            const hornL = new THREE.Mesh(new THREE.ConeGeometry(0.1, 1.5), hornMat);
+            hornL.rotation.x = Math.PI/4;
+            hornL.position.set(0.5, 1, 0.5);
+            headGroup.add(hornL);
+            
+            const hornR = new THREE.Mesh(new THREE.ConeGeometry(0.1, 1.5), hornMat);
+            hornR.rotation.x = Math.PI/4;
+            hornR.position.set(-0.5, 1, 0.5);
+            headGroup.add(hornR);
+
+            const hornN = new THREE.Mesh(new THREE.ConeGeometry(0.1, 0.8), hornMat);
+            hornN.rotation.x = Math.PI/4;
+            hornN.position.set(0, 0.8, 1.2);
+            headGroup.add(hornN);
+
+            group.add(headGroup);
+
+            // 四肢
+            function createLeg(x, z) {
+                const legG = new THREE.Group();
+                legG.position.set(x, 1, z);
+                const legM = new THREE.Mesh(new THREE.BoxGeometry(0.6, 1.5, 0.6), mat);
+                legM.position.y = -0.5;
+                legM.castShadow = true;
+                legG.add(legM);
+                return legG;
+            }
+            const legFL = createLeg(0.8, 1.2);
+            const legFR = createLeg(-0.8, 1.2);
+            const legBL = createLeg(0.8, -1.2);
+            const legBR = createLeg(-0.8, -1.2);
+            group.add(legFL); group.add(legFR); group.add(legBL); group.add(legBR);
+
+            return {
+                mesh: group,
+                parts: { legFL, legFR, legBL, legBR, head: headGroup },
+                type: 'tri'
+            };
+        }
+
+        function spawnDinoGroup(type, count) {
+            for(let i=0; i<count; i++) {
+                let dinoObj;
+                let scale = 1;
+                let speedBase = 1;
+
+                if (type === 'trex') {
+                    dinoObj = buildTRex();
+                    scale = 2 + Math.random();
+                    speedBase = 3;
+                } else if (type === 'brachio') {
+                    dinoObj = buildBrachiosaurus();
+                    scale = 3 + Math.random();
+                    speedBase = 1.5;
+                } else {
+                    dinoObj = buildTriceratops();
+                    scale = 1.5 + Math.random();
+                    speedBase = 2;
+                }
+
+                dinoObj.mesh.scale.set(scale, scale, scale);
+                
+                // 隨機位置與方向
+                const angle = Math.random() * Math.PI * 2;
+                const radius = 20 + Math.random() * 200;
+                dinoObj.mesh.position.set(
+                    Math.cos(angle) * radius,
+                    0,
+                    Math.sin(angle) * radius
+                );
+                
+                // 數據初始化
+                dinoObj.speed = speedBase * (0.8 + Math.random() * 0.4);
+                dinoObj.turnTimer = Math.random() * 100;
+                dinoObj.rotY = Math.random() * Math.PI * 2;
+                dinoObj.mesh.rotation.y = dinoObj.rotY;
+
+                scene.add(dinoObj.mesh);
+                dinos.push(dinoObj);
+            }
+        }
+
+        // --- 恐龍動畫邏輯 ---
+        function updateDinos(delta, time) {
+            dinos.forEach(dino => {
+                // 1. 移動
+                const dir = new THREE.Vector3(0, 0, 1);
+                dir.applyAxisAngle(new THREE.Vector3(0,1,0), dino.rotY);
+                dino.mesh.position.addScaledVector(dir, dino.speed * delta);
+
+                // 2. 邊界與轉向
+                if (dino.mesh.position.length() > 250) {
+                    // 面向中心
+                    const targetAngle = Math.atan2(-dino.mesh.position.x, -dino.mesh.position.z);
+                    // 簡單的平滑轉向
+                    dino.rotY = targetAngle; 
+                } else {
+                    dino.turnTimer -= delta;
+                    if (dino.turnTimer <= 0) {
+                        dino.rotY += (Math.random() - 0.5) * 1.5;
+                        dino.turnTimer = 3 + Math.random() * 5;
+                    }
+                }
+                dino.mesh.rotation.y = dino.rotY;
+
+                // 3. 肢體動畫 (Walk Cycle)
+                const walkCycle = time * dino.speed * 2; 
+
+                if (dino.type === 'trex') {
+                    // 兩足行走
+                    dino.parts.legL.rotation.x = Math.sin(walkCycle) * 0.5;
+                    dino.parts.legR.rotation.x = Math.sin(walkCycle + Math.PI) * 0.5;
+                    dino.parts.tail.rotation.y = Math.sin(walkCycle * 0.5) * 0.2; // 尾巴擺動
+                    dino.parts.neck.rotation.x = Math.sin(walkCycle * 2) * 0.05; // 頭部輕微晃動
+                } else {
+                    // 四足行走
+                    dino.parts.legFL.rotation.x = Math.sin(walkCycle) * 0.4;
+                    dino.parts.legBR.rotation.x = Math.sin(walkCycle) * 0.4;
+                    dino.parts.legFR.rotation.x = Math.sin(walkCycle + Math.PI) * 0.4;
+                    dino.parts.legBL.rotation.x = Math.sin(walkCycle + Math.PI) * 0.4;
+                    
+                    if(dino.parts.tail) dino.parts.tail.rotation.y = Math.cos(walkCycle) * 0.2;
+                    if(dino.parts.neck) dino.parts.neck.rotation.z = Math.sin(walkCycle) * 0.05; // 脖子左右
+                }
+            });
+        }
+
+        // --- 環境生成 (保持不變) ---
+        function generateVegetation(count) {
+            const trunkGeo = new THREE.CylinderGeometry(0.4, 0.8, 3, 5);
+            const trunkMat = new THREE.MeshLambertMaterial({ color: 0x5D4037 });
+            const leavesGeo = new THREE.ConeGeometry(2.5, 6, 6);
+            const leavesMat = new THREE.MeshLambertMaterial({ color: 0x2E7D32 });
+            
+            for (let i = 0; i < count; i++) {
+                const mesh = new THREE.Group();
+                const trunk = new THREE.Mesh(trunkGeo, trunkMat);
+                trunk.position.y = 1.5; 
+                trunk.castShadow = true;
+                const leaves = new THREE.Mesh(leavesGeo, leavesMat);
+                leaves.position.y = 4.5; 
+                leaves.castShadow = true;
+                mesh.add(trunk); mesh.add(leaves);
+                
+                const s = 1 + Math.random() * 3;
+                mesh.scale.set(s,s,s);
+                
+                const angle = Math.random() * Math.PI * 2;
+                const r = 20 + Math.random() * 230;
+                mesh.position.set(Math.cos(angle)*r, 0, Math.sin(angle)*r);
+                scene.add(mesh);
+            }
+        }
+
+        // --- 手機控制邏輯 (保持不變) ---
+        function setupMobileControls() {
+            const bindBtn = (id, directionKey) => {
+                const btn = document.getElementById(id);
+                const startAction = (e) => {
+                    e.preventDefault(); moveState[directionKey] = true; btn.classList.add('active');
+                };
+                const endAction = (e) => {
+                    e.preventDefault(); moveState[directionKey] = false; btn.classList.remove('active');
+                };
+                btn.addEventListener('touchstart', startAction, {passive: false});
+                btn.addEventListener('touchend', endAction, {passive: false});
+                btn.addEventListener('mousedown', startAction);
+                btn.addEventListener('mouseup', endAction);
+                btn.addEventListener('mouseleave', endAction);
+            };
+
+            bindBtn('btn-up', 'forward');
+            bindBtn('btn-down', 'backward');
+            bindBtn('btn-left', 'left');
+            bindBtn('btn-right', 'right');
+
+            document.addEventListener('touchstart', function(e) {
+                if(e.target.closest('#controls-container')) return;
+                const touch = e.touches[0];
+                touchStartPos.x = touch.clientX;
+                touchStartPos.y = touch.clientY;
+            }, {passive: false});
+
+            document.addEventListener('touchmove', function(e) {
+                if(e.target.closest('#controls-container')) return;
+                const touch = e.touches[0];
+                const deltaX = touch.clientX - touchStartPos.x;
+                const deltaY = touch.clientY - touchStartPos.y;
+                const sensitivity = 0.005;
+                cameraRotation.y -= deltaX * sensitivity;
+                cameraRotation.x -= deltaY * sensitivity;
+                const PI_2 = Math.PI / 2;
+                cameraRotation.x = Math.max(-PI_2, Math.min(PI_2, cameraRotation.x));
+                touchStartPos.x = touch.clientX;
+                touchStartPos.y = touch.clientY;
+            }, {passive: false});
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const time = performance.now();
+            const delta = (time - prevTime) / 1000;
+
+            camera.rotation.set(cameraRotation.x, cameraRotation.y, 0, 'YXZ');
+
+            velocity.x -= velocity.x * 10.0 * delta;
+            velocity.z -= velocity.z * 10.0 * delta;
+            direction.z = Number(moveState.forward) - Number(moveState.backward);
+            direction.x = Number(moveState.right) - Number(moveState.left);
+            direction.normalize(); 
+            if (moveState.forward || moveState.backward) velocity.z -= direction.z * 80.0 * delta;
+            if (moveState.left || moveState.right) velocity.x -= direction.x * 80.0 * delta;
+
+            const vec = new THREE.Vector3();
+            vec.setFromMatrixColumn(camera.matrix, 0);
+            camera.position.addScaledVector(vec, -velocity.x * delta);
+            vec.setFromMatrixColumn(camera.matrix, 0);
+            vec.crossVectors(camera.up, vec);
+            camera.position.addScaledVector(vec, -velocity.z * delta);
+            
+            // 玩家走路晃動
+            if (moveState.forward || moveState.backward || moveState.left || moveState.right) {
+                camera.position.y = 2 + Math.sin(time * 0.012) * 0.15;
+            } else {
+                camera.position.y += (2 - camera.position.y) * 0.1;
+            }
+
+            updateDinos(delta, time / 1000);
+
+            prevTime = time;
+            renderer.render(scene, camera);
+        }
+    </script>
+</body>
+</html>
